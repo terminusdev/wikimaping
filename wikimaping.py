@@ -556,7 +556,7 @@ class WmLabelTemplate:
                 text_span += self.__template [i]
 
         if brackets > 0:
-            text_span += self.__template [tags_start:]
+            text_span += self.__template [tags_start - 1:]
         if text_span:
             self.__spans.append (WmLabelSpanText (text_span))
 
@@ -635,22 +635,23 @@ class WmLabel:
                 group = True
                 group_empty = False
 
-            value = span.value (self.image)
-
             if group:
-                # Return an empty string if ANY tag in a group of spans
-                # from [SQUARE BRACKETS] in label template) is undefined:
-                # Correct: "[Month DD, YYYY]" -> ""
-                #          "[YYYY year]"      -> ""
-                # Wrong:   "[Month DD, YYYY]" -> " , "
-                #          "[YYYY year]"      -> " year"
-                if not value:
-                    group_empty = True
-                    group_text = ""
                 if not group_empty:
-                    group_text += value
+                    value = span.value (self.image)
+
+                    # Return an empty string if ANY tag in a group of spans
+                    # (from [SQUARE BRACKETS] in label template) is undefined:
+                    # Correct: "[Month DD, YYYY]" -> ""
+                    #          "[YYYY year]"      -> ""
+                    # Wrong:   "[Month DD, YYYY]" -> " , "
+                    #          "[YYYY year]"      -> " year"
+                    if not value:
+                        group_empty = True
+                        group_text = ""
+                    else:
+                        group_text += value
             else:
-                label_text += value
+                label_text += span.value (self.image)
 
             if span.group_end:
                 label_text += group_text
