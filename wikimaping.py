@@ -99,7 +99,7 @@ MONTH_NAMES = {'01' : 'january',
                }
 
 
-#-Constanst-and-Variables-----------------------------------------------------#
+#-Constanst-------------------------------------------------------------------#
 
 GRAPHIC_UTILITY_NAME = "ImageMagick"
 
@@ -165,11 +165,6 @@ ALIGNMENT_TO_GRAVITY_MAP = {ALIGNMENT_TOP_LEFT     : 'NorthWest',
 
 
 BACKUP_DIR_NAME = "backup"
-backup_enabled = True # Backup original photo when converting in place
-
-files_found = 0
-files_converted = 0
-new_dirs = []
 
 
 #- System utilities ----------------------------------------------------------#
@@ -220,6 +215,20 @@ def get_temp_file_name (dir, prefix, ext):
 
     print ("ERROR! Can't create temporary file:\n  " + res + "\n")
     return ""
+
+
+def get_target_path (source_root, target_root, path):
+    source_root = normalize_path (source_root)
+    target_root = normalize_path (target_root)
+    path = normalize_path (path)
+
+    if not path.startswith (source_root):
+        return ""
+
+    sub_path = path [len (source_root) :]
+    while sub_path and (sub_path [0] == '/' or sub_path [0] == '\\'):
+        sub_path = sub_path [1:]
+    return os.path.join (target_root, sub_path)
 
 
 def cmd_result (path, args):
@@ -748,335 +757,386 @@ class WmLabel:
         return label_file
 
 
-#- Photo file converting -----------------------------------------------------#
+#- Photo files converting ----------------------------------------------------#
 
-def convert_file (source, target, backup, label):
+class WmFiles:
     """
-    Convert source photo with the ImageMagick convert
+    Convert files for uploading to wikimapia.
     """
 
-    if target == backup:
-         return
+    def __init__ (self, paths):
+        self.paths = paths
+        self.target_root = ""
 
-    image = WmImageMetrics (source)
-    label.set_image (image)
+        self.label = None
 
-    # 1) Downscale a large photo to <PHOTO_MAX_SIDE> pixels on the long side
-    resize = ""
-    if image.width () > PHOTO_MAX_SIDE or image.height () > PHOTO_MAX_SIDE:
-        # a) Horisontal (landscape) photo
-        if image.width () > image.height ():
-            resize = " -resize " + str (PHOTO_MAX_SIDE) + "x"
-        # b) Vertical (portrait) photo
+        # Backup original photo when converting in place
+        self.backup_enabled = True
+
+        self.new_dirs = []
+        self.reset ()
+
+    def reset (self):
+        self.start_time = 0
+        self.source_exist = False
+        self.files_found = 0
+        self.files_converted = 0
+
+    def set_target (self, target):
+        self.target_root = normalize_path (target)
+        if path_exist (self.target_root) and not path_is_dir (self.target_root):
+            print ("ERROR! Destination is not a folder:\n  " + target)
+            return False
+        return True
+
+    def convert (self):
+        self.reset ()
+        self.start_time = time.time ()
+
+        files = []
+        dirs = []
+        for path in self.paths:
+            src = normalize_path (path)
+            if not path_exist (src):
+                print ("ERROR! Source not found:\n  " + path)
+                continue
+
+            if self.target_root:
+                src_dir = os.path.split (src)[0]
+                if (src_dir == self.target_root or
+                    (not src_dir and self.target_root == ".")):
+                    print ("ERROR! Source and destination files " +
+                           "are the same:\n  " + src)
+                    print ("To replace the original file with the " +
+                           "converted one,\n"
+                           "don't specify the --destination folder "
+                           "and use the --nobackup option.\n")
+                    continue
+
+            if path_is_dir (src):
+                dirs.append (normalize_path (src))
+            else:
+                files.append (normalize_path (src))
+
+        self.source_exist = (len (dirs) > 0) or (len (files) > 0)
+
+        self.__process_dirs (dirs)
+        self.__process_files (files)
+
+        self.__clean_new_dirs ()
+
+    def print_stats (self):
+        if not self.start_time:
+            return
+
+        if not self.files_found:
+            if self.source_exist:
+                print ("Supported images not found. Supported file types:\n" +
+                       "\n".join ([(" ." + s) for s in FILE_EXTENSIONS]))
+            return
+
+        total_time = time.time () - self.start_time
+        if total_time < 0:
+            total_time = 0
+
+        files_per_sec = "???"
+        sec_per_file = "???"
+        if total_time > 0 and self.files_converted > 0:
+            files_per_sec = "{: 7.2f}".format (float (self.files_converted) /
+                                               total_time)
+            sec_per_file = "{: 7.2f}".format (total_time /
+                                              self.files_converted)
+
+        print ("\n"
+               "Files found      = {:4d}\n".format (self.files_found) +
+               "Files converted  = {:4d}\n".format (self.files_converted) +
+               "Files per second = " + files_per_sec + "\n" +
+               "Time per file    = " + sec_per_file + " sec\n" +
+               "Total time       = {: 7.2f} sec\n".format (total_time))
+
+    def __convert_file (self, source, target, backup):
+        """
+        Convert source photo with the ImageMagick convert
+        """
+
+        if target == backup:
+             return
+
+        image = WmImageMetrics (source)
+        self.label.set_image (image)
+
+        # 1) Downscale a large photo to <PHOTO_MAX_SIDE> pixels on the long side
+        resize = ""
+        if image.width () > PHOTO_MAX_SIDE or image.height () > PHOTO_MAX_SIDE:
+            # a) Horisontal (landscape) photo
+            if image.width () > image.height ():
+                resize = " -resize " + str (PHOTO_MAX_SIDE) + "x"
+            # b) Vertical (portrait) photo
+            else:
+                resize = " -resize " + "x" + str (PHOTO_MAX_SIDE)
+
+        source_dir, source_name = os.path.split (source)
+        target_dir, target_name = os.path.split (target)
+
+        # 2) Create a photo label and write it to the utf-8 text file
+        label_cmd = ""
+        label_file = self.label.write_to_file (target_dir)
+        if label_file:
+            label_cmd = (
+                ' ' +
+                '-gravity ' + self.label.gravity + ' ' +
+                '-pointsize ' + str (self.label.font_size) + ' ' +
+                '-fill "' + LABEL_COLOR + '" ' +
+                '-stroke black -strokewidth ' + str (self.label.stroke_width) +
+                ' ' +
+                '-font ' + LABEL_FONT +
+                ' -annotate +2+0 @"' + label_file + '"')
+
+        # 3) Backup original photo
+        src = source
+        if backup and source != backup:
+            try:
+                shutil.move (source, backup)
+                src = backup
+            except OSError as error:
+                print (str (error))
+                print ("ERROR! Can't move source file to backup:\n  " +
+                       source + "\nto:\n  " +
+                       backup + "\n");
+
+        # 4) Resizing and labeling
+        im_resize = (
+            '"' + src + '" ' +
+            '-auto-orient' +
+            resize + ' ' +
+            '-quality ' + str (PHOTO_QUALITY) + '% ' # Level of compression
+            '-strip' +                               # Remove all metadata
+                                                     # (EXIF, etc.)
+            label_cmd +
+            ' "' + target + '"')
+
+        if cmd_exitcode (IM_CONVERT, im_resize) == 0:
+            self.files_converted += 1
         else:
-            resize = " -resize " + "x" + str (PHOTO_MAX_SIDE)
+            print ("ERROR! Resize failed.\n")
+            if src != source:
+              try:
+                  shutil.move (src, source)
+              except OSError as error:
+                  print (str (error))
+                  print ("ERROR! Can't revert source file from backup:\n  " +
+                         src + "\nto:\n  " +
+                         source + "\n");
 
-    source_dir, source_name = os.path.split (source)
-    target_dir, target_name = os.path.split (target)
-
-    # 2) Create a photo label and write it to the utf-8 text file
-    label_cmd = ""
-    label_file = label.write_to_file (target_dir)
-    if label_file:
-        label_cmd = (
-            ' ' +
-            '-gravity ' + label.gravity + ' ' +
-            '-pointsize ' + str (label.font_size) + ' ' +
-            '-fill "' + LABEL_COLOR + '" ' +
-            '-stroke black -strokewidth ' + str (label.stroke_width) + ' '
-            '-font ' + LABEL_FONT +
-            ' -annotate +2+0 @"' + label_file + '"')
-
-    # 3) Backup original photo
-    src = source
-    if backup and source != backup:
+        # 5) Delete temp files
         try:
-            shutil.move (source, backup)
-            src = backup
+            if label_file and path_exist (label_file):
+                os.remove (label_file)
         except OSError as error:
             print (str (error))
-            print ("ERROR! Can't move source file to backup:\n  " +
-                   source + "\nto:\n  " +
-                   backup + "\n");
+            print ("ERROR! Can't remove temporary label file:\n  " +
+                   label_file + "\n");
 
-    # 4) Resizing and labeling
-    im_resize = (
-        '"' + src + '" ' +
-        '-auto-orient' +
-        resize + ' ' +
-        '-quality ' + str (PHOTO_QUALITY) + '% ' # Level of compression
-        '-strip' +                               # Remove metadata (EXIF, etc.)
-        label_cmd +
-        ' "' + target + '"')
+    def __good_type (self, file):
+        ext = os.path.splitext (file) [1][1:]
+        res = ext.lower () in FILE_EXTENSIONS
 
-    if cmd_exitcode (IM_CONVERT, im_resize) == 0:
-        global files_converted
-        files_converted += 1
-    else:
-        print ("ERROR! Resize failed.\n")
-        if src != source:
-          try:
-              shutil.move (src, source)
-          except OSError as error:
-              print (str (error))
-              print ("ERROR! Can't revert source file from backup:\n  " +
-                     src + "\nto:\n  " +
-                     source + "\n");
+        if res:
+            self.files_found += 1
 
-    # 5) Delete temp files
-    try:
-        if label_file and path_exist (label_file):
-            os.remove (label_file)
-    except OSError as error:
-        print (str (error))
-        print ("ERROR! Can't remove temporary label file:\n  " +
-               label_file + "\n");
+        return res
 
 
-#- File processing -----------------------------------------------------------#
+    def __make_backup_root (self, source_root):
+        dir, name = os.path.split (source_root)
+        if not name:
+            name = dir
+            dir = ""
 
-def good_type (file):
-    ext = os.path.splitext (file) [1][1:]
-    res = ext.lower () in FILE_EXTENSIONS
+        prefix = (name + "_") if path_is_dir (source_root) else ""
 
-    global files_found
-    if res:
-        files_found += 1
+        for i in range (100):
+            res = os.path.join (dir, prefix +
+                                     BACKUP_DIR_NAME +
+                                     ("" if i == 0 else str (i)))
+            if path_exist (res):
+                continue
+            create_dir (res)
+            if path_is_dir (res):
+                self.new_dirs.append (res)
+                return res
+            else:
+                break
 
-    return res
+        print ("ERROR! Can't create backup dir for path:\n  " +
+               source_root + "\n")
 
-
-def make_backup_root (source_root):
-    dir, name = os.path.split (source_root)
-    if not name:
-        name = dir
-        dir = ""
-
-    prefix = (name + "_") if path_is_dir (source_root) else ""
-
-    for i in range (100):
-        res = os.path.join (dir, prefix +
-                                 BACKUP_DIR_NAME +
-                                 ("" if i == 0 else str (i)))
-        if path_exist (res):
-            continue
-        create_dir (res)
-        if path_is_dir (res):
-            global new_dirs
-            new_dirs.append (res)
-            return res
-        else:
-            break
-
-    print ("ERROR! Can't create backup dir for path:\n  " + source_root + "\n")
-
-    return ""
-
-
-def get_target_path (source_root, target_root, path):
-    source_root = normalize_path (source_root)
-    target_root = normalize_path (target_root)
-    path = normalize_path (path)
-
-    if not path.startswith (source_root):
         return ""
 
-    sub_path = path [len (source_root) :]
-    while sub_path and (sub_path [0] == '/' or sub_path [0] == '\\'):
-        sub_path = sub_path [1:]
-    return os.path.join (target_root, sub_path)
+    def __process_dir_inplace (self, root):
+        backup_root = ""
+        backup_root_error = False
 
+        for dir, subdirs, files in os.walk (root):
+            backup_dir = ""
+            backup_dir_error = False
 
-def process_dir_inplace (root, label):
-    backup_root = ""
-    backup_root_error = False
+            for file in files:
+                if not self.__good_type (file):
+                    continue
 
-    for dir, subdirs, files in os.walk (root):
-        backup_dir = ""
-        backup_dir_error = False
+                if not self.backup_enabled:
+                    path = os.path.join (dir, file)
+                    self.__convert_file (path, path, "")
+                    continue
 
-        for file in files:
-            if not good_type (file):
-                continue
+                if not backup_dir and not backup_dir_error:
+                    if not backup_root and not backup_root_error:
+                        backup_root = self.__make_backup_root (root)
+                        backup_root_error = (backup_root == "")
 
-            if not backup_enabled:
+                    if backup_root:
+                        if dir == root:
+                            backup_dir = backup_root
+                        else:
+                            backup_dir = get_target_path (root,
+                                                          backup_root,
+                                                          dir)
+                            create_dir (backup_dir)
+                            if not path_is_dir (backup_dir):
+                                backup_dir = ""
+                        backup_dir_error = (backup_dir == "")
+
                 path = os.path.join (dir, file)
-                convert_file (path, path, "", label)
-                continue
+                backup_path = (os.path.join (backup_dir, file)
+                               if backup_dir else
+                               os.path.join (dir, (os.path.splitext (file)[0] +
+                                                   "_backup" +
+                                                   os.path.splitext (file)[1])))
 
-            if not backup_dir and not backup_dir_error:
-                if not backup_root and not backup_root_error:
-                    backup_root = make_backup_root (root)
-                    backup_root_error = (backup_root == "")
-
-                if backup_root:
-                    if dir == root:
-                        backup_dir = backup_root
-                    else:
-                        backup_dir = get_target_path (root, backup_root, dir)
-                        create_dir (backup_dir)
-                        if not path_is_dir (backup_dir):
-                            backup_dir = ""
-                    backup_dir_error = (backup_dir == "")
-
-            path = os.path.join (dir, file)
-            backup_path = (os.path.join (backup_dir, file)
-                           if backup_dir else
-                           os.path.join (dir, (os.path.splitext (file)[0] +
-                                               "_backup" +
-                                               os.path.splitext (file)[1])))
-
-            convert_file (path, path, backup_path, label)
+                self.__convert_file (path, path, backup_path)
 
 
-def process_dir (source_root, target_root, label):
-    if not target_root:
-        process_dir_inplace (source_root, label)
-        return
+    def __process_dir (self, source_root):
+        if not self.target_root:
+            self.__process_dir_inplace (source_root)
+            return
 
-    target_root_add_to_new = not path_exist (target_root)
+        target_root_add_to_new = not path_exist (self.target_root)
 
-    source_upper_root, _ = os.path.split (source_root)
-    for dir, subdirs, files in os.walk (source_root):
-        target_dir = ""
+        source_upper_root, _ = os.path.split (source_root)
+        for dir, subdirs, files in os.walk (source_root):
+            target_dir = ""
+
+            for file in files:
+                if not self.__good_type (file):
+                    continue
+
+                if not target_dir:
+                    # source_upper_root is used instead of source_root
+                    # so that the script can be conveniently integrated
+                    # into file managers:
+                    # A subdirectory corresponding to the source_root is created
+                    # in the target_root.
+                    # The converted files will not be written directly to
+                    # target_root but to this subdirectory.
+                    target_dir = get_target_path (source_upper_root,
+                                                  self.target_root,
+                                                  dir)
+                    if not create_dir (target_dir):
+                        print ("ERROR! Can't create destination folder:\n  " +
+                               target_dir)
+                        return
+
+                    if target_root_add_to_new:
+                        self.new_dirs.append (self.target_root)
+                        target_root_add_to_new = False
+
+                source_path = os.path.join (dir, file)
+                target_path = os.path.join (target_dir, file)
+                self.__convert_file (source_path, target_path, source_path)
+
+    def __process_dirs (self, dirs):
+        dirs.sort ()
+
+        for dir in dirs:
+            self.__process_dir (dir)
+
+    def __process_files_inplace (self, files):
+        root = ""
+        root_processed = False
+        backup_root = ""
 
         for file in files:
-            if not good_type (file):
+            if not self.__good_type (file):
                 continue
 
-            if not target_dir:
-                # source_upper_root is used instead of source_root so that
-                # the script can be conveniently integrated into file managers:
-                # A subdirectory corresponding to the source_root is created
-                # in the target_root.
-                # The converted files will not be written directly to
-                # target_root but to this subdirectory.
-                target_dir = get_target_path (source_upper_root,
-                                              target_root,
-                                              dir)
-                if not create_dir (target_dir):
+            if not self.backup_enabled:
+                self.__convert_file (path, path, "")
+                continue
+
+            dir, name = os.path.split (file)
+            if root != dir:
+                root_processed = False
+            if not root_processed:
+                root = dir
+                backup_root = self.__make_backup_root (file)
+                root_processed = True
+
+            backup_file = (os.path.join (backup_root, name)
+                           if backup_root else
+                           os.path.join (dir, (os.path.splitext (name)[0] +
+                                               "_backup" +
+                                               os.path.splitext (name)[1])))
+
+            self.__convert_file (file, file, backup_file)
+
+    def __process_files (self, files):
+        files.sort ()
+
+        if not self.target_root:
+            self.__process_files_inplace (files)
+            return
+
+        target_root_created = False
+        target_root_add_to_new = not path_exist (self.target_root)
+        for file in files:
+            if not self.__good_type (file):
+                continue
+
+            if not target_root_created:
+                if not create_dir (self.target_root):
                     print ("ERROR! Can't create destination folder:\n  " +
-                           target_dir)
+                           self.target_root)
                     return
+                target_root_created = True
 
                 if target_root_add_to_new:
-                    new_dirs.append (target_root)
+                    self.new_dirs.append (self.target_root)
                     target_root_add_to_new = False
 
-            source_path = os.path.join (dir, file)
-            target_path = os.path.join (target_dir, file)
-            convert_file (source_path, target_path, source_path, label)
+            dir, name = os.path.split (file)
+            target_file = os.path.join (self.target_root, name)
 
+            self.__convert_file (file, target_file, file)
 
-def process_dirs (dirs, target_root, label):
-    dirs.sort ()
+    def __clean_new_dirs (self):
+        """Remove all newly created directories if they are useless (empty)."""
+        self.new_dirs.sort ()
 
-    for dir in dirs:
-        process_dir (dir, target_root, label)
+        try:
+            for dir in self.new_dirs:
+                files_not_found = True
 
+                for cur_dir, subdirs, files in os.walk (dir):
+                    if len (files) > 0:
+                        files_not_found = False
+                        break
 
-def process_files_inplace (files, label):
-    root = ""
-    root_processed = False
-    backup_root = ""
-
-    for file in files:
-        if not good_type (file):
-            continue
-
-        if not backup_enabled:
-            convert_file (path, path, "", label)
-            continue
-
-        dir, name = os.path.split (file)
-        if root != dir:
-            root_processed = False
-        if not root_processed:
-            root = dir
-            backup_root = make_backup_root (file)
-            root_processed = True
-
-        backup_file = (os.path.join (backup_root, name)
-                       if backup_root else
-                       os.path.join (dir, (os.path.splitext (name)[0] +
-                                           "_backup" +
-                                           os.path.splitext (name)[1])))
-
-        convert_file (file, file, backup_file, label)
-
-
-def process_files (files, target_root, label):
-    files.sort ()
-
-    if not target_root:
-        process_files_inplace (files, label)
-        return
-
-    target_root_created = False
-    target_root_add_to_new = not path_exist (target_root)
-    for file in files:
-        if not good_type (file):
-            continue
-
-        if not target_root_created:
-            if not create_dir (target_root):
-                print ("ERROR! Can't create destination folder:\n  " +
-                       target_root)
-                return
-            target_root_created = True
-
-            if target_root_add_to_new:
-                new_dirs.append (target_root)
-                target_root_add_to_new = False
-
-        dir, name = os.path.split (file)
-        target_file = os.path.join (target_root, name)
-
-        convert_file (file, target_file, file, label)
-
-
-def clean_new_dir (root):
-    files_not_found = True
-
-    for dir, subdirs, files in os.walk (root):
-        if len (files) > 0:
-            files_not_found = False
-            break
-
-    if files_not_found:
-        shutil.rmtree (root, ignore_errors=True)
-
-def clean_new_dirs ():
-    """Remove all newly created directories if they are useless (empty)."""
-    global new_dirs
-    new_dirs.sort ()
-
-    try:
-        for dir in new_dirs:
-            clean_new_dir (dir)
-    except OSError:
-        pass
-
-
-def print_stats (start_time):
-  total_time = time.time () - start_time
-  if total_time < 0:
-      total_time = 0
-
-  files_per_sec = "???"
-  sec_per_file = "???"
-  if total_time > 0 and files_converted > 0:
-      files_per_sec = "{: 7.2f}".format (float (files_converted) /
-                                         total_time)
-      sec_per_file = "{: 7.2f}".format (total_time /
-                                        files_converted)
-
-  print ("\n"
-         "Files found      = {:4d}\n".format (files_found) +
-         "Files converted  = {:4d}\n".format (files_converted) +
-         "Files per second = " + files_per_sec + "\n" +
-         "Time per file    = " + sec_per_file + " sec\n" +
-         "Total time       = {: 7.2f} sec\n".format (total_time))
+                if files_not_found:
+                    shutil.rmtree (dir, ignore_errors=True)
+        except OSError:
+            pass
 
 
 #-----------------------------------------------------------------------------#
@@ -1160,53 +1220,15 @@ def main ():
         return
 
 
-    target = normalize_path (args.target)
-    if path_exist (target) and not path_is_dir (target):
-        print ("ERROR! Destination is not a folder:\n  " + args.target)
+    files = WmFiles (args.path)
+
+    if not files.set_target (args.target):
         return
+    files.backup_enabled = not args.nobackup
+    files.label = WmLabel (args.label, args.label_alignment)
 
-    global backup_enabled
-    backup_enabled = not args.nobackup
-
-    label = WmLabel (args.label, args.label_alignment)
-
-
-    start_time = time.time ()
-
-    files = []
-    dirs = []
-    for src in args.path:
-        if not path_exist (src):
-            print ("ERROR! Source not found:\n  " + src)
-            continue
-
-        src = normalize_path (src)
-
-        if target:
-            src_dir = os.path.split (src)[0]
-            if src_dir == target or (not src_dir and target == "."):
-                print ("ERROR! Source and destination files are the same:\n  " +
-                       src)
-                print ("To replace the original file with the converted one,\n"
-                       "don't specify the --destination folder "
-                       "and use the --nobackup option.\n")
-                continue
-
-        if path_is_dir (src):
-            dirs.append (normalize_path (src))
-        else:
-            files.append (normalize_path (src))
-
-    process_dirs (dirs, target, label)
-    process_files (files, target, label)
-
-    if files_found > 0:
-        print_stats (start_time)
-    elif dirs or files:
-        print ("Supported images not found. Supported file types:\n" +
-               "\n".join ([(" ." + s) for s in FILE_EXTENSIONS]))
-
-    clean_new_dirs ()
+    files.convert ()
+    files.print_stats ()
 
 
 if __name__ == "__main__":
