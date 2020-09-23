@@ -22,7 +22,7 @@ Tested versions:
 Tested on Python 3.4
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.5"
 
 
 import sys
@@ -34,7 +34,6 @@ import textwrap
 import subprocess
 import shutil
 import argparse
-
 
 #-Options---------------------------------------------------------------------#
 # You can safely change these options in addition to the command line options
@@ -79,6 +78,7 @@ LABEL_FONT_SIZE = 40              # This font size corresponds
 LABEL_FONT_SIZE_PHOTO_SIDE = 1920 # Photo resolution corresponding
                                   # to LABEL_FONT_SIZE
 LABEL_COLOR = "rgb(255,255,255)"
+LABEL_STROKE_COLOR = "rgb(0,0,0)"
 LABEL_LINE_WIDTH = 60 # Max length of the label in characters.
                       # Longer lines will be wrapped.
                       # This value corresponds to LABEL_FONT_SIZE
@@ -104,18 +104,13 @@ MONTH_NAMES = {'01' : 'january',
 GRAPHIC_UTILITY_NAME = "ImageMagick"
 
 
-"""
-Photo orientation according EXIF:
-
-  1        2       3      4         5            6           7          8
-
-888888  888888      88  88      8888888888  88                  88  8888888888
-88          88      88  88      88  88      88  88          88  88      88  88
-8888      8888    8888  8888    88          8888888888  8888888888          88
-88          88      88  88
-88          88  888888  888888
-"""
-
+# Photo orientation according EXIF:
+#    1       2      3       4         5           6           7           8
+# 888888  888888      88  88      8888888888  88                  88  8888888888
+# 88          88      88  88      88  88      88  88          88  88      88  88
+# 8888      8888    8888  8888    88          8888888888  8888888888          88
+# 88          88      88  88
+# 88          88  888888  888888
 ORIENTATIONS_MAP = {'1' : 'RotateNoneFlipNone',
                     '2' : 'RotateNoneFlipHorisontal',
                     '3' : 'Rotate180FlipNone',
@@ -150,6 +145,12 @@ LABEL_TAGS = {'YYYY'      : 'year',
               'file_name' : 'file_name',
               }
 
+# Tags that are independent of the image
+# (that value is the same for any image file)
+LABEL_TAGS_STATIC = []
+
+LABEL_MAX_SIZE = 4096
+
 
 # Label alignment options for the four corners of the photo
 ALIGNMENT_TOP_LEFT     = 'TopLeft'
@@ -169,13 +170,7 @@ BACKUP_DIR_NAME = "backup"
 
 #- System utilities ----------------------------------------------------------#
 
-def normalize_path (path):
-    """Remove path separator from from the end of path."""
-    dir, name = os.path.split (path)
-    return path if name else dir
-
-
-def path_exist (path):
+def path_exists (path):
     try:
         return os.path.exists (path)
     except OSError:
@@ -192,43 +187,54 @@ def path_is_dir (path):
 
     return False
 
-
-def create_dir (dir):
+def move_file (src, dst):
     try:
-        if not os.path.exists (dir):
-            os.makedirs (dir)
-        if not os.path.isdir (dir):
-            return False
-        return True
+        shutil.move (src, dst)
     except OSError as error:
         print (str (error))
+        return False
 
-    return False
+    return True
 
+def remove_file (path):
+    try:
+        os.remove (path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        print (str (error))
+        return False
 
-def get_temp_file_name (dir, prefix, ext):
-    res = ""
-    for i in range (10):
-        res = os.path.join (dir, prefix + "_94350621_TMP" + str (i) + "." + ext)
-        if not path_exist (res):
-            return res
-
-    print ("ERROR! Can't create temporary file:\n  " + res + "\n")
-    return ""
-
+    return True
 
 def get_target_path (source_root, target_root, path):
-    source_root = normalize_path (source_root)
-    target_root = normalize_path (target_root)
-    path = normalize_path (path)
-
     if not path.startswith (source_root):
         return ""
 
     sub_path = path [len (source_root) :]
-    while sub_path and (sub_path [0] == '/' or sub_path [0] == '\\'):
+    while sub_path and (sub_path [0] == os.path.sep):
         sub_path = sub_path [1:]
     return os.path.join (target_root, sub_path)
+
+
+def get_backup_path (path, backup_dir):
+    if backup_dir:
+        res = os.path.join (backup_dir, os.path.split (path) [1])
+    else:
+        rname, ext = os.path.splitext (path)
+        rname += "_backup"
+        res = rname + ext
+
+    if not path_exists (res):
+        return res
+
+    for i in range (1, 999):
+        try: rname, ext
+        except NameError: rname, ext = os.path.splitext (res)
+        res = rname + "_{:03d}".format (i) + ext
+        if not path_exists (res):
+            return res
+    return res
 
 
 def cmd_result (path, args):
@@ -268,6 +274,73 @@ def cmd_exitcode (path, args):
     return res
 
 
+class WmTempFile:
+    """
+    Generate temporary name, create temp file and delete it in destrucor.
+    """
+
+    def __init__ (self, root, prefix, ext):
+        for i in range (10):
+            self.path = os.path.join (root,
+                                      prefix +
+                                      "_94350621_TMP" + str (i) + "." +
+                                      ext)
+            if not path_exists (self.path):
+                return
+
+        print ("ERROR! Can't create temporary file:\n  " + self.path + "\n")
+        self.path = ""
+
+    def __del__ (self):
+        if self.path and not remove_file (self.path):
+            print ("ERROR! Can't remove temporary file:\n  " +
+                   self.path + "\n")
+
+    def read (self, max_size):
+        if not self.path:
+            return []
+
+        try:
+            size = os.stat (self.path).st_size
+            if size > max_size:
+                print ("ERROR! Temporary file is too big:\n  " +
+                       self.path + "\n  " +
+                       "Size: " + str (size) + " b\n  " +
+                       "Max size: " + str (max_size) + " b")
+
+                return []
+        except OSError as error:
+            print ("Stat error: " + str (error))
+            return []
+
+        try:
+            with open (self.path, 'r', encoding='utf-8') as file:
+                lines = file.readlines ()
+        except UnicodeDecodeError as error:
+            print (str (error))
+            print ("ERROR! Temporary file corrupted:\n  " +
+                   self.path + "\n")
+            return []
+        except OSError as error:
+            print ("Read error: " + str (error))
+            return []
+
+        return lines
+
+    def write (self, lines):
+        if not self.path:
+            return False
+
+        try:
+            with open (self.path, 'w', encoding='utf-8') as file:
+                file.writelines (lines)
+        except OSError as error:
+            print ("Write error: " + str (error))
+            return False
+
+        return True
+
+
 #- Retrieving image parameters -----------------------------------------------#
 
 class WmImageMetrics:
@@ -297,6 +370,13 @@ class WmImageMetrics:
 
         self.__file_name = ""
         self.__file_name_error = False
+
+    def move (self, new_path):
+        """Move image file to new_path."""
+        if not move_file (self.path, new_path):
+            return False
+        self.path = new_path
+        return True
 
     def __get_exif_date (self):
         if self.__date_error:
@@ -469,7 +549,9 @@ class WmInitLabelTags:
 
 
 class WmLabelSpan:
-    '''Part of the label template'''
+    """
+    Part of the label template.
+    """
 
     def __init__ (self, text):
         self.__text = text
@@ -481,27 +563,34 @@ class WmLabelSpan:
 
 
 class WmLabelSpanText (WmLabelSpan):
-    '''Plain text part of the label template'''
+    """
+    Plain text part of the label template.
+    """
 
     def value (self, image):
         return self._WmLabelSpan__text
 
 
 class WmLabelSpanTag (WmLabelSpan):
-    '''
+    """
     Tagged part of a label template.
     When composing a label, the tag is replaced by its value
     for the current image.
-    '''
+    """
 
     def value (self, image):
         return LABEL_TAGS [self._WmLabelSpan__text] (image)
 
 
 class WmLabelTemplate:
-    '''List of a label template parts'''
+    """
+    List of a label template parts.
+    """
 
     def __init__ (self, template):
+        self.static = False # This temlate is image-independent
+                            # (label text is the same for any image file)
+
         self.__template = template
         self.__spans = None
 
@@ -519,6 +608,8 @@ class WmLabelTemplate:
 
         if self.__spans:
             return self.__spans
+
+        self.static = True
 
         self.__spans = []
 
@@ -580,8 +671,13 @@ class WmLabelTemplate:
                         if text_span:
                             self.__spans.append (WmLabelSpanText (text_span))
                             text_span = ""
+
                         self.__spans.append (WmLabelSpanTag (tag_name))
                         string = string [len (tag_name):]
+
+                        if tag_name not in LABEL_TAGS_STATIC:
+                            self.static = False
+
                         break
                 else:
                     text_span += string [0]
@@ -601,14 +697,78 @@ class WmLabelTemplate:
             self.__spans [-1].group_end = True
 
 
+class WmLabelText:
+    """
+    Store label text as a string or temporary utf-8 file.
+    """
+
+    def __init__ (self, root, text, lines):
+        self.text = None
+
+        self.__lines = None
+        self.__file = None
+        self.__use_file = False
+
+        self.init (root, text, lines)
+
+    def init (self, root, text, lines):
+        self.text = text
+
+        if self.__lines == lines:
+            if not self.__use_file:
+                return
+            if (self.__file and
+                self.__file.read (LABEL_MAX_SIZE * 10) ==  self.__lines):
+                return
+
+        self.__lines = lines
+        if not self.__lines:
+            self.__use_file = False
+            return
+
+        # Label text is single line and contains
+        # only printable ascii characters.
+        # It can be passed to the ImageMagick directly (via command line).
+        self.__use_file = True
+        if (len (self.__lines) == 1 and
+            all ((ord (c) < 128 and
+                  ord (c) >= ord (' ') and
+                  ord (c) <= ord ('~')) for c in self.__lines [0])):
+            self.__use_file = False
+            return
+
+        # Label text is multi-line or contains
+        # non-printable or non-ascii characters.
+        # We pass it to the ImageMagick via an utf-8 text file
+        # (old ImageMagick can't read national letters from command line).
+        if not self.__file:
+            self.__file = WmTempFile (root, "MAGIC_LABEL", "txt")
+
+        if not self.__file.write (self.__lines):
+            print ("ERROR! Can't create label file:\n  " +
+                   self.__file.path)
+            self.__lines = None
+            del (self.__file)
+            self.__file = None
+
+    def __str__ (self):
+        """Return a string that suit for the ImageMagick's -annotate option."""
+        if self.__use_file and self.__file:
+            return '@"' + self.__file.path + '"'
+        if self.text:
+            return '"' + self.text + '"'
+        return ""
+
+
 class WmLabel:
     """
-    Translate label template to label text.
+    Translate label template to the label text.
     Adjust label to fit image size.
     """
 
     def __init__ (self, template, alignment):
-        self.__label = WmLabelTemplate (template) if template else None
+        self.__template = WmLabelTemplate (template) if template else None
+        self.__text = None # Text translated from template for last image
         self.gravity = ALIGNMENT_TO_GRAVITY_MAP [alignment]
         self.set_image (None)
 
@@ -620,17 +780,15 @@ class WmLabel:
         self.__line_width = None
 
     def __compose (self):
-        '''
-        Translate the label template to a label for the current image.
-        '''
-        if not self.__label:
+        """Translate label template to the text for the current image."""
+        if not self.__template:
             return ""
 
         label_text = ""
         group = False
         group_empty = False
         group_text = ""
-        for span in self.__label:
+        for span in self.__template:
             if span.group_start:
                 group = True
                 group_empty = False
@@ -661,9 +819,7 @@ class WmLabel:
         return label_text
 
     def __calc_font_size (self):
-        '''
-        Fit label font size to image size.
-        '''
+        """Fit label font size to image size."""
         if self.__font_size:
             return
 
@@ -686,9 +842,7 @@ class WmLabel:
         return self.__font_size
 
     def __split_lines (self, label_text):
-        '''
-        Split label text to lines to fit image width.
-        '''
+        """Split label text to lines to fit image width."""
         res = textwrap.wrap (label_text, width = self.line_width)
         for i in range (len (res) - 1):
             res [i] += '\n'
@@ -711,9 +865,7 @@ class WmLabel:
 
     @property
     def line_width (self):
-        '''
-        Adjust line width to fit image width and font size.
-        '''
+        """Adjust line width to fit image width and font size."""
         if self.__line_width:
             return self.__line_width
 
@@ -733,29 +885,33 @@ class WmLabel:
 
         return self.__line_width
 
-    def write_to_file (self, dir):
-        """
-        Write label to utf-8 file
-        (old ImageMagick can't read national letters from command line)
-        """
+    def text (self, dir):
+        """Returns the text of the label as a string or utf-8 file."""
+        if not self.__template:
+            return None
+
+        if self.__text and self.__template.static:
+            # Even if the text is image-independent, the line breaks may change
+            # due to different aspect or resolution of the next image
+            self.__text.init (dir,
+                              self.__text.text,
+                              self.__split_lines (self.__text.text))
+            return self.__text
 
         label_text = self.__compose ()
-        if not label_text:
-            return ""
+        if len (label_text ) > (LABEL_MAX_SIZE * 2):
+            print ("ERROR! Label is too long " +
+                   "(" + str (len (label_text )) + " symb):\n" +
+                   label_text  [0:(LABEL_MAX_SIZE * 2)] + "\n...\n")
+            return None
+        label_lines = self.__split_lines (label_text)
 
-        label_file = get_temp_file_name (dir, "MAGIC_LABEL", "txt")
-        if not label_file:
-            return ""
+        if not self.__text:
+            self.__text = WmLabelText (dir, label_text, label_lines)
+        else:
+            self.__text.init (dir, label_text, label_lines)
 
-        try:
-            with open (label_file, 'w', encoding='utf-8') as file:
-                file.writelines (self.__split_lines (label_text))
-        except OSError as error:
-            print (str (error))
-            print ("ERROR! Can't create label file:\n  " + label_file)
-            return ""
-
-        return label_file
+        return self.__text
 
 
 #- Photo files converting ----------------------------------------------------#
@@ -774,7 +930,7 @@ class WmFiles:
         # Backup original photo when converting in place
         self.backup_enabled = True
 
-        self.new_dirs = []
+        self.empty_dirs = [] # Newly created dirs without files
         self.reset ()
 
     def reset (self):
@@ -784,8 +940,9 @@ class WmFiles:
         self.files_converted = 0
 
     def set_target (self, target):
-        self.target_root = normalize_path (target)
-        if path_exist (self.target_root) and not path_is_dir (self.target_root):
+        self.target_root = os.path.normpath (target) if target else ""
+        if (path_exists (self.target_root) and
+            not path_is_dir (self.target_root)):
             print ("ERROR! Destination is not a folder:\n  " + target)
             return False
         return True
@@ -797,8 +954,8 @@ class WmFiles:
         files = []
         dirs = []
         for path in self.paths:
-            src = normalize_path (path)
-            if not path_exist (src):
+            src = os.path.normpath (path)
+            if not path_exists (src):
                 print ("ERROR! Source not found:\n  " + path)
                 continue
 
@@ -815,16 +972,26 @@ class WmFiles:
                     continue
 
             if path_is_dir (src):
-                dirs.append (normalize_path (src))
+                dirs.append (src)
             else:
-                files.append (normalize_path (src))
+                files.append (src)
 
         self.source_exist = (len (dirs) > 0) or (len (files) > 0)
 
-        self.__process_dirs (dirs)
-        self.__process_files (files)
+        dirs.sort ()
+        for dir in dirs:
+            if self.target_root:
+                self.__process_dir (dir)
+            else:
+                self.__process_dir_inplace (dir)
 
-        self.__clean_new_dirs ()
+        files.sort ()
+        if self.target_root:
+            self.__process_files (files)
+        else:
+            self.__process_files_inplace (files)
+
+        self.__clean_empty_dirs ()
 
     def print_stats (self):
         if not self.start_time:
@@ -840,8 +1007,8 @@ class WmFiles:
         if total_time < 0:
             total_time = 0
 
-        files_per_sec = "???"
-        sec_per_file = "???"
+        files_per_sec = " ???"
+        sec_per_file = " ???"
         if total_time > 0 and self.files_converted > 0:
             files_per_sec = "{: 7.2f}".format (float (self.files_converted) /
                                                total_time)
@@ -859,7 +1026,6 @@ class WmFiles:
         """
         Convert source photo with the ImageMagick convert
         """
-
         if target == backup:
              return
 
@@ -876,34 +1042,32 @@ class WmFiles:
             else:
                 resize = " -resize " + "x" + str (PHOTO_MAX_SIDE)
 
-        source_dir, source_name = os.path.split (source)
-        target_dir, target_name = os.path.split (target)
-
-        # 2) Create a photo label and write it to the utf-8 text file
+        # 2) Get a label for this photo
         label_cmd = ""
-        label_file = self.label.write_to_file (target_dir)
-        if label_file:
+        target_dir = os.path.split (target)[0]
+        label_text = self.label.text (target_dir)
+        if label_text:
             label_cmd = (
                 ' ' +
                 '-gravity ' + self.label.gravity + ' ' +
                 '-pointsize ' + str (self.label.font_size) + ' ' +
                 '-fill "' + LABEL_COLOR + '" ' +
-                '-stroke black -strokewidth ' + str (self.label.stroke_width) +
-                ' ' +
+                '-stroke "' + LABEL_STROKE_COLOR + '" ' +
+                '-strokewidth ' + str (self.label.stroke_width) + ' ' +
                 '-font ' + LABEL_FONT +
-                ' -annotate +2+0 @"' + label_file + '"')
+                ' -annotate +2+0 ' + str (label_text))
 
         # 3) Backup original photo
         src = source
         if backup and source != backup:
-            try:
-                shutil.move (source, backup)
+            if image.move (backup):
                 src = backup
-            except OSError as error:
-                print (str (error))
+            else:
                 print ("ERROR! Can't move source file to backup:\n  " +
-                       source + "\nto:\n  " +
-                       backup + "\n");
+                       source + "\n" +
+                       "to:\n  " +
+                       backup + "\n")
+                return
 
         # 4) Resizing and labeling
         im_resize = (
@@ -918,25 +1082,18 @@ class WmFiles:
 
         if cmd_exitcode (IM_CONVERT, im_resize) == 0:
             self.files_converted += 1
+            if src != source:
+                self.__file_created (src)
+            if source != target:
+                self.__file_created (target)
         else:
             print ("ERROR! Resize failed.\n")
             if src != source:
-              try:
-                  shutil.move (src, source)
-              except OSError as error:
-                  print (str (error))
-                  print ("ERROR! Can't revert source file from backup:\n  " +
-                         src + "\nto:\n  " +
-                         source + "\n");
-
-        # 5) Delete temp files
-        try:
-            if label_file and path_exist (label_file):
-                os.remove (label_file)
-        except OSError as error:
-            print (str (error))
-            print ("ERROR! Can't remove temporary label file:\n  " +
-                   label_file + "\n");
+                if not image.move (source):
+                    self.__file_created (src)
+                    print ("ERROR! Can't revert source file from backup:\n  " +
+                           src + "\nto:\n  " +
+                           source + "\n")
 
     def __good_type (self, file):
         ext = os.path.splitext (file) [1][1:]
@@ -947,31 +1104,71 @@ class WmFiles:
 
         return res
 
+    def __create_dir (self, path):
+        try:
+            if path_exists (path):
+                return True
 
-    def __make_backup_root (self, source_root):
-        dir, name = os.path.split (source_root)
+            dir = path
+            empty_dirs = [ dir ]
+            updir = os.path.split (dir)[0]
+            while updir and updir != dir:
+                if path_exists (updir):
+                    break
+                else:
+                    empty_dirs.append (updir)
+                dir = updir
+                updir = os.path.split (dir)[0]
+
+            os.makedirs (path)
+            if not path_is_dir (path):
+                return False
+
+            self.empty_dirs.extend (empty_dirs)
+            return True
+        except OSError as error:
+            print (str (error))
+
+        return False
+
+    def __file_created (self, path):
+        """ Remove all dirs in path from empty_dirs list """
+        if not self.empty_dirs:
+            return
+
+        dir = os.path.split (path) [0]
+        if not dir:
+            return
+        full_dirs = [ dir ]
+        updir = os.path.split (dir)[0]
+        while updir and updir != dir:
+           full_dirs.append (updir)
+           dir = updir
+           updir = os.path.split (dir)[0]
+        self.empty_dirs = [d for d in self.empty_dirs if d not in full_dirs]
+
+    def __make_backup_root (self, path):
+        dir, name = os.path.split (path)
         if not name:
             name = dir
             dir = ""
 
-        prefix = (name + "_") if path_is_dir (source_root) else ""
+        backup_root = os.path.join (dir, BACKUP_DIR_NAME)
+        if path_is_dir (path):
+            backup_root = os.path.join (backup_root, name)
 
         for i in range (100):
-            res = os.path.join (dir, prefix +
-                                     BACKUP_DIR_NAME +
-                                     ("" if i == 0 else str (i)))
-            if path_exist (res):
-                continue
-            create_dir (res)
+            res = backup_root
+            if i > 0:
+                res += "_{:02d}".format (i)
             if path_is_dir (res):
-                self.new_dirs.append (res)
                 return res
-            else:
-                break
+            if not path_exists (res) and self.__create_dir (res):
+                return res
 
-        print ("ERROR! Can't create backup dir for path:\n  " +
-               source_root + "\n")
-
+        print ("ERROR! Can't create backup directory:\n  " +
+               "source:" + path + "\n" +
+               "backup:" + backup_root)
         return ""
 
     def __process_dir_inplace (self, root):
@@ -986,15 +1183,16 @@ class WmFiles:
                 if not self.__good_type (file):
                     continue
 
+                path = os.path.join (dir, file)
+
                 if not self.backup_enabled:
-                    path = os.path.join (dir, file)
                     self.__convert_file (path, path, "")
                     continue
 
                 if not backup_dir and not backup_dir_error:
                     if not backup_root and not backup_root_error:
                         backup_root = self.__make_backup_root (root)
-                        backup_root_error = (backup_root == "")
+                        backup_root_error = not backup_root
 
                     if backup_root:
                         if dir == root:
@@ -1003,29 +1201,15 @@ class WmFiles:
                             backup_dir = get_target_path (root,
                                                           backup_root,
                                                           dir)
-                            create_dir (backup_dir)
-                            if not path_is_dir (backup_dir):
+                            if not self.__create_dir (backup_dir):
                                 backup_dir = ""
-                        backup_dir_error = (backup_dir == "")
+                        backup_dir_error = not backup_dir
 
-                path = os.path.join (dir, file)
-                backup_path = (os.path.join (backup_dir, file)
-                               if backup_dir else
-                               os.path.join (dir, (os.path.splitext (file)[0] +
-                                                   "_backup" +
-                                                   os.path.splitext (file)[1])))
-
-                self.__convert_file (path, path, backup_path)
-
+                self.__convert_file (path, path,
+                                     get_backup_path (path, backup_dir))
 
     def __process_dir (self, source_root):
-        if not self.target_root:
-            self.__process_dir_inplace (source_root)
-            return
-
-        target_root_add_to_new = not path_exist (self.target_root)
-
-        source_upper_root, _ = os.path.split (source_root)
+        source_upper_root = os.path.split (source_root) [0]
         for dir, subdirs, files in os.walk (source_root):
             target_dir = ""
 
@@ -1044,100 +1228,74 @@ class WmFiles:
                     target_dir = get_target_path (source_upper_root,
                                                   self.target_root,
                                                   dir)
-                    if not create_dir (target_dir):
+                    if not self.__create_dir (target_dir):
                         print ("ERROR! Can't create destination folder:\n  " +
                                target_dir)
                         return
-
-                    if target_root_add_to_new:
-                        self.new_dirs.append (self.target_root)
-                        target_root_add_to_new = False
 
                 source_path = os.path.join (dir, file)
                 target_path = os.path.join (target_dir, file)
                 self.__convert_file (source_path, target_path, source_path)
 
-    def __process_dirs (self, dirs):
-        dirs.sort ()
-
-        for dir in dirs:
-            self.__process_dir (dir)
-
     def __process_files_inplace (self, files):
         root = ""
         root_processed = False
         backup_root = ""
-
-        for file in files:
-            if not self.__good_type (file):
+        for path in files:
+            if not self.__good_type (path):
                 continue
 
             if not self.backup_enabled:
                 self.__convert_file (path, path, "")
                 continue
 
-            dir, name = os.path.split (file)
+            dir = os.path.split (path)[0]
             if root != dir:
                 root_processed = False
             if not root_processed:
                 root = dir
-                backup_root = self.__make_backup_root (file)
+                backup_root = self.__make_backup_root (path)
                 root_processed = True
 
-            backup_file = (os.path.join (backup_root, name)
-                           if backup_root else
-                           os.path.join (dir, (os.path.splitext (name)[0] +
-                                               "_backup" +
-                                               os.path.splitext (name)[1])))
-
-            self.__convert_file (file, file, backup_file)
+            self.__convert_file (path, path,
+                                 get_backup_path (path, backup_root))
 
     def __process_files (self, files):
-        files.sort ()
-
-        if not self.target_root:
-            self.__process_files_inplace (files)
-            return
-
         target_root_created = False
-        target_root_add_to_new = not path_exist (self.target_root)
-        for file in files:
-            if not self.__good_type (file):
+        for path in files:
+            if not self.__good_type (path):
                 continue
 
             if not target_root_created:
-                if not create_dir (self.target_root):
+                if not self.__create_dir (self.target_root):
                     print ("ERROR! Can't create destination folder:\n  " +
                            self.target_root)
                     return
                 target_root_created = True
 
-                if target_root_add_to_new:
-                    self.new_dirs.append (self.target_root)
-                    target_root_add_to_new = False
+            name = os.path.split (path)[1]
+            target_path = os.path.join (self.target_root, name)
 
-            dir, name = os.path.split (file)
-            target_file = os.path.join (self.target_root, name)
+            self.__convert_file (path, target_path, path)
 
-            self.__convert_file (file, target_file, file)
-
-    def __clean_new_dirs (self):
+    def __clean_empty_dirs (self):
         """Remove all newly created directories if they are useless (empty)."""
-        self.new_dirs.sort ()
+        if not self.empty_dirs:
+            return
+
+        self.empty_dirs.sort (reverse=True)
 
         try:
-            for dir in self.new_dirs:
-                files_not_found = True
-
+            for dir in self.empty_dirs:
                 for cur_dir, subdirs, files in os.walk (dir):
                     if len (files) > 0:
-                        files_not_found = False
                         break
-
-                if files_not_found:
+                else:
                     shutil.rmtree (dir, ignore_errors=True)
         except OSError:
             pass
+
+        self.empty_dirs.clear ()
 
 
 #-----------------------------------------------------------------------------#
@@ -1162,7 +1320,7 @@ def main ():
                  "[--label_alignment=<corner>] "
                  "<source dir> | <source file>"
                  "... ",
-             epilog=####CHECK
+             epilog=
                  'Examples:\n'
                  '%(prog)s image.jpg\n'
                  '%(prog)s image.jpg --destination "Photos/To Wikimapia"\n'
@@ -1220,12 +1378,18 @@ def main ():
         p.print_help ()
         return
 
-
     files = WmFiles (args.path)
 
     if not files.set_target (args.target):
         return
     files.backup_enabled = not args.nobackup
+
+
+    if len (args.label) > LABEL_MAX_SIZE:
+        print ("ERROR! Label is too long:\n  " +
+               "Size: " + str (len (args.label)) + " symb\n  " +
+               "Max size: " + str (LABEL_MAX_SIZE) + " symb")
+        return
     files.label = WmLabel (args.label, args.label_alignment)
 
     files.convert ()
