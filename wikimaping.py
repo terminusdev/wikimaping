@@ -35,12 +35,12 @@ import subprocess
 import shutil
 import argparse
 
+
 #-Options---------------------------------------------------------------------#
 # You can safely change these options in addition to the command line options
 # for fine-tuning
 #-----------------------------------------------------------------------------#
 
-####REPLACE
 # For new ImageMagick versions (>= 7.0):
 #IM_CONVERT = "magick convert"
 #IM_IDENTIFY = "magick identify"
@@ -211,7 +211,7 @@ def get_target_path (source_root, target_root, path):
     if not path.startswith (source_root):
         return ""
 
-    sub_path = path [len (source_root) :]
+    sub_path = path [len (source_root):]
     while sub_path and (sub_path [0] == os.path.sep):
         sub_path = sub_path [1:]
     return os.path.join (target_root, sub_path)
@@ -896,7 +896,7 @@ class WmLabel:
             self.__text.init (dir,
                               self.__text.text,
                               self.__split_lines (self.__text.text))
-            return self.__text
+            return str (self.__text)
 
         label_text = self.__compose ()
         if len (label_text ) > (LABEL_MAX_SIZE * 2):
@@ -911,7 +911,7 @@ class WmLabel:
         else:
             self.__text.init (dir, label_text, label_lines)
 
-        return self.__text
+        return str (self.__text)
 
 
 #- Photo files converting ----------------------------------------------------#
@@ -1055,7 +1055,7 @@ class WmFiles:
                 '-stroke "' + LABEL_STROKE_COLOR + '" ' +
                 '-strokewidth ' + str (self.label.stroke_width) + ' ' +
                 '-font ' + LABEL_FONT +
-                ' -annotate +2+0 ' + str (label_text))
+                ' -annotate +2+0 ' + label_text)
 
         # 3) Backup original photo
         src = source
@@ -1154,14 +1154,18 @@ class WmFiles:
             dir = ""
 
         backup_root = os.path.join (dir, BACKUP_DIR_NAME)
-        if path_is_dir (path):
+        source_is_dir = path_is_dir (path)
+        if source_is_dir:
             backup_root = os.path.join (backup_root, name)
 
         for i in range (100):
             res = backup_root
             if i > 0:
                 res += "_{:02d}".format (i)
-            if path_is_dir (res):
+            if source_is_dir:
+                if path_exists (res):
+                    continue
+            elif path_is_dir (res):
                 return res
             if not path_exists (res) and self.__create_dir (res):
                 return res
@@ -1201,7 +1205,8 @@ class WmFiles:
                             backup_dir = get_target_path (root,
                                                           backup_root,
                                                           dir)
-                            if not self.__create_dir (backup_dir):
+                            if (backup_dir and
+                                not self.__create_dir (backup_dir)):
                                 backup_dir = ""
                         backup_dir_error = not backup_dir
 
@@ -1323,14 +1328,14 @@ def main ():
              epilog=
                  'Examples:\n'
                  '%(prog)s image.jpg\n'
-                 '%(prog)s image.jpg --destination "Photos/To Wikimapia"\n'
                  '%(prog)s image.jpg --nobackup\n'
+                 '%(prog)s image.jpg --destination "Photos/To Wikimapia"\n'
                  '%(prog)s "Photos/Some file.jpg" "Photos/Some folder" --destination "Photos/Temp"\n'
-                 '%(prog)s image.jpg --label"[YYYY]" --label_alignment BottomLeft\n'
-                 '%(prog)s image.jpg --label"[YYYY-MM-DD hh:mm:ss]"\n'
-                 '%(prog)s image.jpg --label"[YYYY-MM-DD ]Image description"\n'
-                 '%(prog)s place1.jpg place2.jpg --label"[Month YYYY, ][file_name]"\n'
-                 '%(prog)s "Photos/Central park" --label"Central park"\n',
+                 '%(prog)s image.jpg --label "[YYYY]"\n'
+                 '%(prog)s image.jpg --label "[YYYY-MM-DD hh:mm:ss]" --label_alignment BottomLeft\n'
+                 '%(prog)s image.jpg --label "[YYYY-MM-DD ]Image description"\n'
+                 '%(prog)s place1.jpg place2.jpg --label "[Month YYYY, ][file_name]"\n'
+                 '%(prog)s "Photos/Central park" --label "Central park"\n',
              formatter_class=argparse.RawTextHelpFormatter) # Manual linewrapping
 
     p.add_argument ("-v", "--version",
@@ -1378,12 +1383,12 @@ def main ():
         p.print_help ()
         return
 
+
     files = WmFiles (args.path)
 
     if not files.set_target (args.target):
         return
     files.backup_enabled = not args.nobackup
-
 
     if len (args.label) > LABEL_MAX_SIZE:
         print ("ERROR! Label is too long:\n  " +
