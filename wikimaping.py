@@ -1,3 +1,6 @@
+#! /usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
 Convert photo collection for uploading to wikimapia.org:
  - Downscale to ~ 1920 x 1440
@@ -15,14 +18,20 @@ Tested versions:
   ImageMagick 6.9.11-27 portable Q16 x64
   https://imagemagick.org/download/binaries/ImageMagick-6.9.11-27-portable-Q8-x64.zip
   ImageMagick 7.0.10-27 (converts about 4x slower - Q16 or Q8, x86 or x64,
-                         with or witout HDRI, with or whithot OpenMP
-                         (multythreading suppot) - no matter)
+                         with or without HDRI, with or without OpenMP
+                         (multithreading support) - no matter)
   https://imagemagick.org/download/binaries/ImageMagick-7.0.10-27-portable-Q16-x64.zip
 
-Tested on Python 3.4
+ATTENTION!
+You have to allow reading the "@*" path pattern in the ImageMagick policy
+(/etc/ImageMagick-*/policy.xml)
+in order to add multi-line or non-ascii labels to an image:
+  <policy domain="path" rights="read" pattern="@*"/>
+
+Tested on Python 3.4, 3.8
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 
 import sys
@@ -42,18 +51,22 @@ import argparse
 #-----------------------------------------------------------------------------#
 
 # For new ImageMagick versions (>= 7.0):
-#IM_CONVERT = "magick convert"
-#IM_IDENTIFY = "magick identify"
+#IM_CONVERT = ["magick", "convert"]
+#IM_IDENTIFY = ["magick", "identify"]
 
 # For old ImageMagick versions (< 7.0):
 # ImageMagick convert command conflicts with the standard Windows utility
 # and therefore must be renamed for example to "magick"
-IM_CONVERT = "convert" if os.name != "nt" else "magick"
-IM_IDENTIFY = "identify"
+IM_CONVERT = ["convert"] if os.name != "nt" else ["magick"]
+IM_IDENTIFY = ["identify"]
 
 # You can also specify the full path to the ImageMagick utilities, for example:
-#IM_CONVERT = '"C:\\Program Files\\ImageMagick\\magick.exe" convert'
-#IM_IDENTIFY = '"C:\\Program Files\\ImageMagick\\magick.exe" identify'
+# For new ImageMagick versions (>= 7.0):
+#IM_CONVERT = ["C:\\Program Files\\ImageMagick\\magick.exe", "convert"]
+#IM_IDENTIFY = ["C:\\Program Files\\ImageMagick\\magick.exe", "identify"]
+# For old ImageMagick versions (< 7.0):
+#IM_CONVERT = ["C:\\Program Files\\ImageMagick\\convert.exe"]
+#IM_IDENTIFY = ["C:\\Program Files\\ImageMagick\\identify.exe"]
 
 
 # Files with this extensions will be converted
@@ -237,38 +250,47 @@ def get_backup_path (path, backup_dir):
     return res
 
 
-def cmd_result (path, args):
-    cmd = path + " " + args
-    print (cmd)
+def print_cmd (args):
+    for arg in args:
+        if arg.find (" ") < 0:
+            print (arg, end = "")
+        else:
+            print ('"' + arg + '"', end = "")
+        print (" ", end = "")
+    print ("")
+
+
+def cmd_result (args):
+    print_cmd (args)
 
     try:
         #with os.popen (cmd) as out:
         #    result = out.readlines ()
         # ....
-        with subprocess.Popen (cmd, stdout=subprocess.PIPE).stdout as out:
-            result = out.readlines ()
+        with subprocess.Popen (args, stdout=subprocess.PIPE) as out:
+            out.wait ()
+            result = out.stdout.readlines ()
             if not result:
                 return ""
     except FileNotFoundError:
         print (GRAPHIC_UTILITY_NAME +
-               " not found. This path may be wrong:\n " + path)
+               " not found. This path may be wrong:\n " + args [0])
         raise
 
     res = result [0].decode () # only the first line is needed
     print (res)
     return res
 
-def cmd_exitcode (path, args):
-    cmd = path + " " + args
-    print (cmd)
+def cmd_exitcode (args):
+    print_cmd (args)
 
     try:
         # os.system () has a bug on Win 7 - can't start command like this:
         # '"c:\\Folder with space\\program" -option "value in quotes"'
-        res = subprocess.call (cmd)
+        res = subprocess.call (args)
     except FileNotFoundError:
         print (GRAPHIC_UTILITY_NAME +
-               " not found. This path may be wrong:\n " + path)
+               " not found. This path may be wrong:\n " + args [0])
         raise
 
     return res
@@ -401,8 +423,9 @@ class WmImageMetrics:
                     'DateTimeDigitized',
                     'DateTime'
                     ):
-            im_date = ('-format "%[EXIF:' + tag + ']" ' + '"' + self.path + '"')
-            exif_date = cmd_result (IM_IDENTIFY, im_date)
+            exif_date = cmd_result (IM_IDENTIFY +
+                                    ['-format', '%[EXIF:' + tag + ']',
+                                     self.path])
             if exif_date:
                 break
         else:
@@ -442,10 +465,9 @@ class WmImageMetrics:
         else:
             param = "h" if get_width else "w"
 
-        im_cmd = ('-format %' + param + ' ' +
-                  '"' + self.path + '"')
-
-        im_result = cmd_result (IM_IDENTIFY, im_cmd)
+        im_result = cmd_result (IM_IDENTIFY +
+                                ['-format', '%' + param,
+                                 self.path])
         if not im_result.isdigit ():
              print ("ERROR! Can't detect image " +
                     ("width" if get_width else "height") + ":\n  " +
@@ -458,10 +480,9 @@ class WmImageMetrics:
         if self.__orientation:
             return self.__orientation
 
-        im_orientation = ('-format "%[EXIF:Orientation]" ' +
-                          '"' + self.path + '"')
-
-        exif_orientation = cmd_result (IM_IDENTIFY, im_orientation)
+        exif_orientation = cmd_result (IM_IDENTIFY +
+                                       ['-format', '%[EXIF:Orientation]',
+                                       self.path])
 
         if len (exif_orientation) == 1 and exif_orientation [0].isdigit ():
             try :
@@ -754,9 +775,9 @@ class WmLabelText:
     def __str__ (self):
         """Return a string that suit for the ImageMagick's -annotate option."""
         if self.__use_file and self.__file:
-            return '@"' + self.__file.path + '"'
+            return "@" + self.__file.path
         if self.text:
-            return '"' + self.text + '"'
+            return self.text
         return ""
 
 
@@ -899,6 +920,9 @@ class WmLabel:
             return str (self.__text)
 
         label_text = self.__compose ()
+        if not label_text:
+            return None
+
         if len (label_text ) > (LABEL_MAX_SIZE * 2):
             print ("ERROR! Label is too long " +
                    "(" + str (len (label_text )) + " symb):\n" +
@@ -1033,29 +1057,27 @@ class WmFiles:
         self.label.set_image (image)
 
         # 1) Downscale a large photo to <PHOTO_MAX_SIDE> pixels on the long side
-        resize = ""
+        resize_cmd = []
         if image.width () > PHOTO_MAX_SIDE or image.height () > PHOTO_MAX_SIDE:
             # a) Horisontal (landscape) photo
             if image.width () > image.height ():
-                resize = " -resize " + str (PHOTO_MAX_SIDE) + "x"
+                resize_cmd.extend (['-resize', str (PHOTO_MAX_SIDE) + 'x'])
             # b) Vertical (portrait) photo
             else:
-                resize = " -resize " + "x" + str (PHOTO_MAX_SIDE)
+                resize_cmd.extend (['-resize', 'x' + str (PHOTO_MAX_SIDE)])
 
         # 2) Get a label for this photo
-        label_cmd = ""
         target_dir = os.path.split (target)[0]
         label_text = self.label.text (target_dir)
+        label_cmd = []
         if label_text:
-            label_cmd = (
-                ' ' +
-                '-gravity ' + self.label.gravity + ' ' +
-                '-pointsize ' + str (self.label.font_size) + ' ' +
-                '-fill "' + LABEL_COLOR + '" ' +
-                '-stroke "' + LABEL_STROKE_COLOR + '" ' +
-                '-strokewidth ' + str (self.label.stroke_width) + ' ' +
-                '-font ' + LABEL_FONT +
-                ' -annotate +2+0 ' + label_text)
+            label_cmd.extend (['-gravity', self.label.gravity])
+            label_cmd.extend (['-pointsize', str (self.label.font_size)])
+            label_cmd.extend (['-fill', LABEL_COLOR])
+            label_cmd.extend (['-stroke', LABEL_STROKE_COLOR])
+            label_cmd.extend (['-strokewidth', str (self.label.stroke_width)])
+            label_cmd.extend (['-font', LABEL_FONT])
+            label_cmd.extend (['-annotate', '+2+0', label_text])
 
         # 3) Backup original photo
         src = source
@@ -1070,17 +1092,18 @@ class WmFiles:
                 return
 
         # 4) Resizing and labeling
-        im_resize = (
-            '"' + src + '" ' +
-            '-auto-orient' +
-            resize + ' ' +
-            '-quality ' + str (PHOTO_QUALITY) + '% ' # Level of compression
-            '-strip' +                               # Remove all metadata
-                                                     # (EXIF, etc.)
-            label_cmd +
-            ' "' + target + '"')
+        cmd = []
+        cmd.extend (IM_CONVERT)
+        cmd.append (src)
+        cmd.append ('-auto-orient')
+        cmd.extend (resize_cmd)
+        cmd.extend (['-quality', str (PHOTO_QUALITY) + '%']) # Level of compression
+        cmd.append ('-strip')                                # Remove all metadata
+                                                             # (EXIF, etc.)
+        cmd.extend (label_cmd)
+        cmd.append (target)
 
-        if cmd_exitcode (IM_CONVERT, im_resize) == 0:
+        if cmd_exitcode (cmd) == 0:
             self.files_converted += 1
             if src != source:
                 self.__file_created (src)
