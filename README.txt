@@ -1,6 +1,5 @@
 Convert photo collection for uploading to wikimapia.org:
  - Downscale to ~ 1920 x 1440
-   (wikimapia itself reduces the resolution of photos to ~ 960 x 720)
  - Compress (wikimapia can't upload file greater than ~ 2 Mb)
  - Add text label (date, file name, etc.)
 
