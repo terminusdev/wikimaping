@@ -110,7 +110,7 @@ MONTH_NAMES = {'01' : 'january',
                }
 
 
-#-Constanst-------------------------------------------------------------------#
+#-Constants-------------------------------------------------------------------#
 
 GRAPHIC_UTILITY_NAME = "ImageMagick"
 
@@ -296,7 +296,7 @@ def cmd_exitcode (args):
 
 class WmTempFile:
     """
-    Generate temporary name, create temp file and delete it in destrucor.
+    Generate temporary name, create temp file and delete it in destructor.
     """
 
     def __init__ (self, root, prefix, ext):
