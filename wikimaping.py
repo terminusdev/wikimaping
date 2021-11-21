@@ -249,12 +249,18 @@ def get_backup_path (path, backup_dir):
 
 
 def print_cmd (args):
-    for arg in args:
-        if arg.find (" ") < 0:
-            print (arg, end = "")
-        else:
-            print ('"' + arg + '"', end = "")
-        print (" ", end = "")
+    try:
+        for arg in args:
+            if arg.find (" ") < 0:
+                print (arg, end = "")
+            else:
+                print ('"' + arg + '"', end = "")
+            print (" ", end = "")
+    except UnicodeEncodeError as error:
+        print (str (error))
+        print ("To use unicode file names on Windows use python 3.6 or newer.")
+        pass
+
     print ("")
 
 
