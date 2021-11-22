@@ -258,7 +258,8 @@ def print_cmd (args):
             print (" ", end = "")
     except UnicodeEncodeError as error:
         print (str (error))
-        print ("To use unicode file names on Windows use python 3.6 or newer.")
+        if os.name == "nt":
+            print ("To use unicode file names on Windows use python 3.6 or newer.")
         pass
 
     print ("")
